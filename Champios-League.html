@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Prédiction Score Avancée</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 20px; background: #f0f2f5; color: #222;
+  }
+  .container {
+    max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+  }
+  h1 {
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  label {
+    display: block; margin-top: 15px; font-weight: bold;
+  }
+  input[type=number], input[type=text] {
+    width: 70px; padding: 5px; margin-right: 8px;
+    border: 1px solid #ccc; border-radius: 4px;
+  }
+  input[type=checkbox] {
+    transform: scale(1.3);
+    margin-right: 6px;
+  }
+  table {
+    width: 100%; border-collapse: collapse; margin-top: 10px;
+  }
+  th, td {
+    border: 1px solid #ddd; padding: 6px; text-align: center;
+  }
+  th {
+    background: #eee;
+  }
+  button {
+    margin-top: 20px; padding: 10px 20px;
+    background: #007bff; color: white; border: none; border-radius: 5px;
+    cursor: pointer; font-size: 16px;
+  }
+  button:hover {
+    background: #0056b3;
+  }
+  .results {
+    margin-top: 25px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 6px 10px;
+    border-radius: 12px;
+    margin: 3px 5px 3px 0;
+    font-weight: bold;
+    font-size: 14px;
+    color: white;
+    user-select: none;
+  }
+  .green { background: #28a745; }
+  .orange { background: #fd7e14; }
+  .red { background: #dc3545; }
+  /* Style pour champ live MT désactivé */
+  input[disabled] {
+    background: #eee;
+    color: #999;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Prédiction Score Avancée</h1>
+
+  <label for="homeOdds">Cote Victoire Domicile (1):</label>
+  <input type="number" id="homeOdds" min="1" step="0.01" value="1.8" />
+
+  <label for="drawOdds">Cote Nul (X):</label>
+  <input type="number" id="drawOdds" min="1" step="0.01" value="3.4" />
+
+  <label for="awayOdds">Cote Victoire Extérieur (2):</label>
+  <input type="number" id="awayOdds" min="1" step="0.01" value="4.2" />
+
+  <label>Historique des 10 confrontations passées (score MT & FT)</label>
+
+  <datalist id="scoreOptions">
+    <option value="1"></option>
+    <option value="2"></option>
+    <option value="3"></option>
+    <option value="4"></option>
+    <option value="5"></option>
+    <option value="6"></option>
+    <option value="7"></option>
+    <option value="8"></option>
+    <option value="9"></option>
+    <option value="10"></option>
+    <option value="11"></option>
+    <option value="12"></option>
+    <option value="13"></option>
+    <option value="14"></option>
+    <option value="15"></option>
+    <option value="16"></option>
+    <option value="17"></option>
+    <option value="18"></option>
+    <option value="19"></option>
+    <option value="20"></option>
+  </datalist>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>MT Équipe A</th>
+        <th>MT Équipe B</th>
+        <th>FT Équipe A</th>
+        <th>FT Équipe B</th>
+      </tr>
+    </thead>
+    <tbody>
+      <script>
+        for(let i=1; i<=10; i++){
+          document.write(`
+            <tr>
+              <td>${i}</td>
+              <td><input type="text" list="scoreOptions" id="mtA${i}" pattern="\\d{1,2}" /></td>
+              <td><input type="text" list="scoreOptions" id="mtB${i}" pattern="\\d{1,2}" /></td>
+              <td><input type="text" list="scoreOptions" id="ftA${i}" pattern="\\d{1,2}" /></td>
+              <td><input type="text" list="scoreOptions" id="ftB${i}" pattern="\\d{1,2}" /></td>
+            </tr>
+          `);
+        }
+      </script>
+    </tbody>
+  </table>
+
+  <label style="margin-top:20px;">
+    <input type="checkbox" id="useLiveMT" /> Utiliser le score live à la mi-temps
+  </label>
+  <input type="text" id="liveMT" placeholder="ex: 1-0" disabled pattern="\\d+-\\d+" style="width:80px" />
+
+  <button onclick="predict()">Prédire le score</button>
+
+  <div class="results" id="results"></div>
+</div>
+
+<script>
+  const useLiveMT = document.getElementById('useLiveMT');
+  const liveMTInput = document.getElementById('liveMT');
+
+  useLiveMT.addEventListener('change', () => {
+    liveMTInput.disabled = !useLiveMT.checked;
+    if(!useLiveMT.checked) liveMTInput.value = '';
+  });
+
+  function factorial(n) {
+    let f=1;
+    for(let i=2; i<=n; i++) f*=i;
+    return f;
+  }
+
+  function poissonPmf(k, lambda) {
+    return Math.pow(lambda, k) * Math.exp(-lambda) / factorial(k);
+  }
+
+  function oddsToProb(home, draw, away) {
+    const pHome = 1/home;
+    const pDraw = 1/draw;
+    const pAway = 1/away;
+    const sum = pHome + pDraw + pAway;
+    return { home: pHome/sum, draw: pDraw/sum, away: pAway/sum };
+  }
+
+  function calcLambdas(history) {
+    let sumMTHome=0, sumMTAway=0, sumFTHome=0, sumFTAway=0;
+    history.forEach(h=>{
+      sumMTHome += h.mtA;
+      sumMTAway += h.mtB;
+      sumFTHome += h.ftA;
+      sumFTAway += h.ftB;
+    });
+    return {
+      home_mt: sumMTHome/history.length,
+      away_mt: sumMTAway/history.length,
+      home_ft: sumFTHome/history.length,
+      away_ft: sumFTAway/history.length
+    };
+  }
+
+  function adjustLambdas(lambdas, probs, weight=0.4) {
+    const adv = probs.home - probs.away;
+    let adjHome = lambdas.home_ft * (1 + weight * adv);
+    let adjAway = lambdas.away_ft * (1 - weight * adv);
+    adjHome = Math.max(0.01, adjHome);
+    adjAway = Math.max(0.01, adjAway);
+    return {...lambdas, home_ft: adjHome, away_ft: adjAway};
+  }
+
+  function scoreDist(lambdaHome, lambdaAway, maxGoals=8) {
+    const dist = [];
+    for(let i=0; i<=maxGoals; i++){
+      dist[i] = [];
+      for(let j=0; j<=maxGoals; j++){
+        dist[i][j] = poissonPmf(i, lambdaHome) * poissonPmf(j, lambdaAway);
+      }
+    }
+    return dist;
+  }
+
+  function calcBTTS(dist) {
+    let prob=0;
+    for(let i=1; i<dist.length; i++){
+      for(let j=1; j<dist.length; j++){
+        prob += dist[i][j];
+      }
+    }
+    return prob;
+  }
+
+  function calcBTTSByTeam(dist) {
+    let homeBTTS=0, awayBTTS=0;
+    const max = dist.length;
+    for(let i=1; i<max; i++) for(let j=0; j<max; j++) homeBTTS += dist[i][j];
+    for(let j=1; j<max; j++) for(let i=0; i<max; i++) awayBTTS += dist[i][j];
+    return {homeBTTS, awayBTTS};
+  }
+
+  function totalGoalsDist(dist) {
+    const totals = {};
+    const max = dist.length;
+    for(let i=0; i<max; i++){
+      for(let j=0; j<max; j++){
+        const s = i+j;
+        totals[s] = (totals[s] || 0) + dist[i][j];
+      }
+    }
+    return totals;
+  }
+
+  function conditionedSecondHalfDist(lambdaHome2nd, lambdaAway2nd, scoreMT, maxGoals=8) {
+    const distFT = [];
+    for(let i=0; i<=maxGoals; i++){
+      distFT[i] = [];
+      for(let j=0; j<=maxGoals; j++){
+        distFT[i][j] = 0;
+      }
+    }
+    const secondHalfDist = scoreDist(lambdaHome2nd, lambdaAway2nd, maxGoals);
+    for(let shA=0; shA<=maxGoals; shA++){
+      for(let shB=0; shB<=maxGoals; shB++){
+        const ftA = shA + scoreMT.home;
+        const ftB = shB + scoreMT.away;
+        if(ftA<=maxGoals && ftB<=maxGoals){
+          distFT[ftA][ftB] += secondHalfDist[shA][shB];
+        }
+      }
+    }
+    return distFT;
+  }
+
+  function topNScores(dist, N=10) {
+    const scores = [];
+    const max = dist.length;
+    for(let i=0; i<max; i++) {
+      for(let j=0; j<max; j++) {
+        scores.push({score:[i,j], p: dist[i][j]});
+      }
+    }
+    scores.sort((a,b)=> b.p - a.p);
+    return scores.slice(0, N);
+  }
+
+  function confidenceScore(history, probs, liveMT) {
+    let conf = 20 + history.length*5 + Math.abs(probs.home - probs.away)*50;
+    if(liveMT) conf += 10;
+    conf = Math.min(95, Math.max(5, Math.round(conf)));
+    return conf;
+  }
+
+  function colorPill(p) {
+    if(p >= 0.6) return 'green';
+    if(p >= 0.4) return 'orange';
+    return 'red';
+  }
+
+  function predict() {
+    const homeOdds = parseFloat(document.getElementById('homeOdds').value);
+    const drawOdds = parseFloat(document.getElementById('drawOdds').value);
+    const awayOdds = parseFloat(document.getElementById('awayOdds').value);
+    if(!homeOdds || !drawOdds || !awayOdds){
+      alert('Merci de saisir des cotes valides (1X2).');
+      return;
+    }
+
+    const history = [];
+    for(let i=1; i<=10; i++){
+      const mtA = parseInt(document.getElementById(`mtA${i}`).value) || 0;
+      const mtB = parseInt(document.getElementById(`mtB${i}`).value) || 0;
+      const ftA = parseInt(document.getElementById(`ftA${i}`).value) || 0;
+      const ftB = parseInt(document.getElementById(`ftB${i}`).value) || 0;
+      history.push({mtA, mtB, ftA, ftB});
+    }
+
+    let liveMT = null;
+    if(document.getElementById('useLiveMT').checked){
+      const val = document.getElementById('liveMT').value.trim();
+      if(!val.match(/^\d+-\d+$/)){
+        alert('Format du score live MT invalide (ex: 1-0)');
+        return;
+      }
+      const parts = val.split('-');
+      liveMT = {home: parseInt(parts[0]), away: parseInt(parts[1])};
+    }
+
+    const probs = oddsToProb(homeOdds, drawOdds, awayOdds);
+
+    let lambdas = calcLambdas(history);
+    lambdas = adjustLambdas(lambdas, probs, 0.4);
+    const lambdaHome2nd = Math.max(0.01, lambdas.home_ft - lambdas.home_mt);
+    const lambdaAway2nd = Math.max(0.01, lambdas.away_ft - lambdas.away_mt);
+
+    const distMT = scoreDist(lambdas.home_mt, lambdas.away_mt, 8);
+
+    let distFT;
+    if(liveMT){
+      distFT = conditionedSecondHalfDist(lambdaHome2nd, lambdaAway2nd, liveMT, 8);
+    } else {
+      distFT = scoreDist(lambdas.home_ft, lambdas.away_ft, 8);
+    }
+
+    const topMT = topNScores(distMT, 3);
+    const topFT = topNScores(distFT, 10);
+
+    const bttsFT = calcBTTS(distFT);
+    const bttsByTeam = calcBTTSByTeam(distFT);
+    const totals = totalGoalsDist(distFT);
+
+    const conf = confidenceScore(history, probs, liveMT !== null);
+
+    const resultsDiv = document.getElementById('results');
+    let html = `<div><strong>Confiance IA :</strong> <span class="pill ${colorPill(conf/100)}">${conf}%</span></div>`;
+
+    html += `<div><strong>Top 3 scores probables à la mi-temps :</strong><br>`;
+    topMT.forEach(item=>{
+      html += `<span class="pill ${colorPill(item.p)}">${item.score[0]} - ${item.score[1]} (${(item.p*100).toFixed(1)}%)</span> `;
+    });
+    html += `</div>`;
+
+    html += `<div style="margin-top:10px;"><strong>Top 10 scores probables à la fin du match :</strong><br>`;
+    topFT.forEach(item=>{
+      html += `<span class="pill ${colorPill(item.p)}">${item.score[0]} - ${item.score[1]} (${(item.p*100).toFixed(1)}%)</span> `;
+    });
+    html += `</div>`;
+
+    html += `<div style="margin-top:10px;"><strong>BTTS (Both Teams To Score) :</strong> ${(bttsFT*100).toFixed(1)}%</div>`;
+    html += `<div><strong>BTTS équipe Domicile :</strong> ${(bttsByTeam.homeBTTS*100).toFixed(1)}%</div>`;
+    html += `<div><strong>BTTS équipe Extérieur :</strong> ${(bttsByTeam.awayBTTS*100).toFixed(1)}%</div>`;
+
+    html += `<div style="margin-top:10px;"><strong>Total buts probables :</strong> `;
+    Object.entries(totals).forEach(([k,v])=>{
+      if(v>0.01) html += `<span class="pill ${colorPill(v)}">${k} (${(v*100).toFixed(1)}%)</span> `;
+    });
+    html += `</div>`;
+
+    resultsDiv.innerHTML = html;
+  }
+</script>
+</body>
+</html>
